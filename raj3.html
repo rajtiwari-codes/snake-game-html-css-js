@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Snake Game - Leaderboard</title>
+    <link rel="stylesheet" href="sam3.css">
+</head>
+<body>
+    <div class="page">
+        <header class="topbar">
+            <div>
+                <h1>Snake (Sam Siddi Edition)</h1>
+                <p class="subtitle">Classic mobile snake with a live leaderboard.</p>
+            </div>
+            <div class="scorebox">
+                <div class="score">
+                    <span class="label">Score</span>
+                    <span id="score">0</span>
+                </div>
+                <div class="score">
+                    <span class="label">Best</span>
+                    <span id="best">0</span>
+                </div>
+            </div>
+        </header>
+
+        <main class="layout">
+            <section class="gamecard">
+                <div id="board" class="board" aria-label="Snake game board"></div>
+                <div class="controls">
+                    <button id="startBtn">Start</button>
+                    <button id="pauseBtn">Pause</button>
+                    <button id="resetBtn">Reset</button>
+                </div>
+                <div class="controls">
+                    <label class="select">
+                        Speed
+                        <select id="speedSelect">
+                            <option value="easy">Easy</option>
+                            <option value="medium" selected>Medium</option>
+                            <option value="hard">Hard</option>
+                        </select>
+                    </label>
+                </div>
+                <div class="tips">
+                    <div>Use arrow keys or WASD. On mobile, use swipe.</div>
+                    <div>Eat apples, avoid walls and yourself.</div>
+                </div>
+            </section>
+
+            <aside class="sidecard">
+                <h2>Leaderboard</h2>
+                <ol id="leaderboard" class="leaderboard">
+                    <li class="muted">Loading...</li>
+                </ol>
+                <div class="info">
+                    <div class="tag">Grid: 20 x 20</div>
+                    <div class="tag">Speed: Adaptive</div>
+                </div>
+                <div class="note">
+                    Scores are stored in Firebase Firestore.
+                </div>
+            </aside>
+        </main>
+    </div>
+
+    <div id="overlay" class="overlay hidden" role="dialog" aria-modal="true">
+        <div class="modal">
+            <h3>New High Score!</h3>
+            <p>Your score: <span id="finalScore">0</span></p>
+            <label class="field">
+                Name (3-12 chars)
+                <input id="playerName" type="text" maxlength="12" placeholder="Your name" />
+            </label>
+            <div class="actions">
+                <button id="submitScoreBtn">Submit</button>
+                <button id="skipScoreBtn" class="ghost">Skip</button>
+            </div>
+            <p class="fineprint">No login required. Basic anti-cheat checks are applied.</p>
+        </div>
+    </div>
+
+    <script type="module">
+        // Firebase (CDN - modular v9)
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+        import {
+            getFirestore,
+            collection,
+            addDoc,
+            query,
+            orderBy,
+            limit,
+            onSnapshot,
+            serverTimestamp
+        } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore.js";
+
+        // TODO: Replace with your Firebase config
+        const firebaseConfig = {
+            apiKey: "YOUR_API_KEY",
+            authDomain: "YOUR_PROJECT.firebaseapp.com",
+            projectId: "YOUR_PROJECT_ID",
+            storageBucket: "YOUR_PROJECT.appspot.com",
+            messagingSenderId: "YOUR_SENDER_ID",
+            appId: "YOUR_APP_ID"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getFirestore(app);
+        const scoresRef = collection(db, "scores");
+
+        const BOARD_SIZE = 13;
+        const SPEED_LEVELS = {
+            easy: 150,
+            medium: 120,
+            hard: 90
+        };
+        const SPEED_STEP = 4;
+        const MIN_SPEED = 60;
+
+        const board = document.getElementById("board");
+        const scoreEl = document.getElementById("score");
+        const bestEl = document.getElementById("best");
+        const leaderboardEl = document.getElementById("leaderboard");
+        const overlay = document.getElementById("overlay");
+        const finalScoreEl = document.getElementById("finalScore");
+        const playerNameEl = document.getElementById("playerName");
+        const submitScoreBtn = document.getElementById("submitScoreBtn");
+        const skipScoreBtn = document.getElementById("skipScoreBtn");
+
+        const startBtn = document.getElementById("startBtn");
+        const pauseBtn = document.getElementById("pauseBtn");
+        const resetBtn = document.getElementById("resetBtn");
+        const speedSelect = document.getElementById("speedSelect");
+
+        let snake = [];
+        let direction = { x: 1, y: 0 };
+        let nextDirection = { x: 1, y: 0 };
+        let apple = { x: 10, y: 10 };
+        let score = 0;
+        let best = Number(localStorage.getItem("snakeBest") || 0);
+        let speed = SPEED_LEVELS.medium;
+        let timer = null;
+        let running = false;
+        let touchStart = null;
+        let overlayOpen = false;
+
+        bestEl.textContent = best.toString();
+
+        function createBoard() {
+            board.style.gridTemplateColumns = `repeat(${BOARD_SIZE}, 1fr)`;
+            board.style.gridTemplateRows = `repeat(${BOARD_SIZE}, 1fr)`;
+        }
+
+        function resetGame() {
+            snake = [
+                { x: 4, y: 10 },
+                { x: 3, y: 10 },
+                { x: 2, y: 10 }
+            ];
+            direction = { x: 1, y: 0 };
+            nextDirection = { x: 1, y: 0 };
+            apple = randomEmptyCell();
+            score = 0;
+            speed = SPEED_LEVELS[speedSelect.value] || SPEED_LEVELS.medium;
+            scoreEl.textContent = score.toString();
+            setSnakeTheme();
+            hideOverlay();
+            render();
+        }
+
+        function randomEmptyCell() {
+            while (true) {
+                const cell = {
+                    x: Math.floor(Math.random() * BOARD_SIZE),
+                    y: Math.floor(Math.random() * BOARD_SIZE)
+                };
+                const onSnake = snake.some(s => s.x === cell.x && s.y === cell.y);
+                if (!onSnake) return cell;
+            }
+        }
+
+        function render() {
+            board.innerHTML = "";
+            const frag = document.createDocumentFragment();
+
+            for (let y = 0; y < BOARD_SIZE; y++) {
+                for (let x = 0; x < BOARD_SIZE; x++) {
+                    const cell = document.createElement("div");
+                    cell.className = "cell";
+                    if (x === apple.x && y === apple.y) cell.classList.add("apple");
+                    frag.appendChild(cell);
+                }
+            }
+
+            snake.forEach((seg, index) => {
+                const idx = seg.y * BOARD_SIZE + seg.x;
+                const cell = frag.childNodes[idx];
+                if (!cell) return;
+                cell.classList.add(index === 0 ? "head" : "snake");
+            });
+
+            board.appendChild(frag);
+        }
+
+        function tick() {
+            direction = nextDirection;
+            const head = { x: snake[0].x + direction.x, y: snake[0].y + direction.y };
+
+            if (hitWall(head) || hitSelf(head)) {
+                endGame();
+                return;
+            }
+
+            snake.unshift(head);
+
+            if (head.x === apple.x && head.y === apple.y) {
+                score += 10;
+                scoreEl.textContent = score.toString();
+                apple = randomEmptyCell();
+                setSnakeTheme();
+                speed = Math.max(MIN_SPEED, speed - SPEED_STEP);
+                if (timer) {
+                    clearInterval(timer);
+                    timer = setInterval(tick, speed);
+                }
+            } else {
+                snake.pop();
+            }
+
+            render();
+        }
+
+        function hitWall(pos) {
+            return pos.x < 0 || pos.x >= BOARD_SIZE || pos.y < 0 || pos.y >= BOARD_SIZE;
+        }
+
+        function hitSelf(pos) {
+            return snake.some((seg, index) => index > 0 && seg.x === pos.x && seg.y === pos.y);
+        }
+
+        function startGame() {
+            if (running) return;
+            if (overlayOpen) return;
+            running = true;
+            timer = setInterval(tick, speed);
+        }
+
+        function pauseGame() {
+            running = false;
+            if (timer) clearInterval(timer);
+            timer = null;
+        }
+
+        function endGame() {
+            pauseGame();
+            if (score > best) {
+                best = score;
+                localStorage.setItem("snakeBest", best.toString());
+                bestEl.textContent = best.toString();
+                showOverlay(score);
+            }
+        }
+
+        function showOverlay(finalScore) {
+            finalScoreEl.textContent = finalScore.toString();
+            overlay.classList.remove("hidden");
+            overlayOpen = true;
+            playerNameEl.value = "";
+            playerNameEl.focus();
+        }
+
+        function hideOverlay() {
+            overlay.classList.add("hidden");
+            overlayOpen = false;
+        }
+
+        function setDirection(x, y) {
+            if (direction.x + x === 0 && direction.y + y === 0) return;
+            nextDirection = { x, y };
+        }
+
+        function normalizeName(input) {
+            const raw = (input || "").trim();
+            const name = raw.replace(/[^a-zA-Z0-9 _-]/g, "").slice(0, 12);
+            if (name.length < 3) return null;
+            return name;
+        }
+
+        async function submitScore() {
+            const name = normalizeName(playerNameEl.value);
+            if (!name) return;
+            if (!Number.isInteger(score) || score < 0 || score > 5000) {
+                return;
+            }
+            try {
+                await addDoc(scoresRef, {
+                    name,
+                    score,
+                    createdAt: serverTimestamp()
+                });
+            } catch (err) {
+                console.error(err);
+            } finally {
+                hideOverlay();
+            }
+        }
+
+        function bindControls() {
+            window.addEventListener("keydown", (e) => {
+                if (overlayOpen) return;
+                if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "w", "a", "s", "d"].includes(e.key)) {
+                    e.preventDefault();
+                }
+                if (e.key === "ArrowUp" || e.key === "w") setDirection(0, -1);
+                if (e.key === "ArrowDown" || e.key === "s") setDirection(0, 1);
+                if (e.key === "ArrowLeft" || e.key === "a") setDirection(-1, 0);
+                if (e.key === "ArrowRight" || e.key === "d") setDirection(1, 0);
+            });
+
+            board.addEventListener("touchstart", (e) => {
+                touchStart = e.changedTouches[0];
+            }, { passive: true });
+
+            board.addEventListener("touchend", (e) => {
+                if (!touchStart) return;
+                const touchEnd = e.changedTouches[0];
+                const dx = touchEnd.clientX - touchStart.clientX;
+                const dy = touchEnd.clientY - touchStart.clientY;
+                const absX = Math.abs(dx);
+                const absY = Math.abs(dy);
+                if (Math.max(absX, absY) < 20) return;
+                if (absX > absY) setDirection(dx > 0 ? 1 : -1, 0);
+                else setDirection(0, dy > 0 ? 1 : -1);
+                touchStart = null;
+            }, { passive: true });
+
+            startBtn.addEventListener("click", startGame);
+            pauseBtn.addEventListener("click", pauseGame);
+            resetBtn.addEventListener("click", () => {
+                pauseGame();
+                resetGame();
+            });
+            speedSelect.addEventListener("change", () => {
+                speed = SPEED_LEVELS[speedSelect.value] || SPEED_LEVELS.medium;
+                if (running) {
+                    clearInterval(timer);
+                    timer = setInterval(tick, speed);
+                }
+            });
+
+            submitScoreBtn.addEventListener("click", submitScore);
+            skipScoreBtn.addEventListener("click", hideOverlay);
+            playerNameEl.addEventListener("input", () => {
+                const cleaned = playerNameEl.value.replace(/[^a-zA-Z0-9 _-]/g, "").slice(0, 12);
+                if (playerNameEl.value !== cleaned) playerNameEl.value = cleaned;
+            });
+        }
+
+        function startLeaderboard() {
+            const q = query(scoresRef, orderBy("score", "desc"), limit(10));
+            onSnapshot(q, (snapshot) => {
+                if (snapshot.empty) {
+                    leaderboardEl.innerHTML = "<li class='muted'>No scores yet.</li>";
+                    return;
+                }
+                leaderboardEl.innerHTML = "";
+                snapshot.forEach((doc) => {
+                    const data = doc.data();
+                    const li = document.createElement("li");
+                    li.innerHTML = `<span>${data.name}</span><span>${data.score}</span>`;
+                    leaderboardEl.appendChild(li);
+                });
+            });
+        }
+
+        function setSnakeTheme() {
+            const palettes = [
+                ["#4ee2a2", "#1da072"],
+                ["#78d1ff", "#1f8ac9"],
+                ["#ffd166", "#f4a261"],
+                ["#ff9ef6", "#cc4cc7"],
+                ["#b8f2e6", "#58b09c"]
+            ];
+            const pick = palettes[Math.floor(Math.random() * palettes.length)];
+            document.documentElement.style.setProperty("--snake-a", pick[0]);
+            document.documentElement.style.setProperty("--snake-b", pick[1]);
+        }
+
+        createBoard();
+        resetGame();
+        bindControls();
+        startLeaderboard();
+    </script>
+</body>
+</html>
